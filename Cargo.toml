@@ -16,7 +16,6 @@ embassy = ["dep:embassy-net"]
 lettre = ["dep:lettre"]
 
 [dependencies]
-thiserror = "2.0.12"
 base64 = { version = "0.22.1", default-features = false }
 
 

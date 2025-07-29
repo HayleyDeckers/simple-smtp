@@ -1372,7 +1372,6 @@ dependencies = [
  "embassy-net",
  "lettre",
  "rustls",
- "thiserror",
  "tokio",
  "tokio-rustls",
  "webpki-roots",
