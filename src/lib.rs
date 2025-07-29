@@ -16,6 +16,8 @@ pub use smtp::Smtp;
 pub mod integrations {
     #[cfg(feature = "embassy")]
     mod embassy;
+    #[cfg(feature = "embassy")]
+    pub use embassy::EmbassyTcpError;
     #[cfg(feature = "lettre")]
     mod lettre;
     #[cfg(feature = "tokio")]
@@ -23,7 +25,7 @@ pub mod integrations {
 }
 
 pub trait ReadWrite {
-    type Error;
+    type Error: core::error::Error;
     fn read(&mut self, buf: &mut [u8]) -> impl Future<Output = Result<usize, Self::Error>>;
     fn write_single(&mut self, buf: &[u8]) -> impl Future<Output = Result<(), Self::Error>>;
     fn write_multi(&mut self, buf: &[&[u8]]) -> impl Future<Output = Result<(), Self::Error>> {
