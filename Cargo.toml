@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["embassy", "tokio", "lettre", "rustls"]
+default = ["embassy", "tokio", "lettre", "rustls", "log-04"]
 # for no_std environments
 std = ["alloc", "embassy-net?/std"]
 alloc = ["embassy-net?/alloc"]
+
+log-04 = ["dep:log"]
 
 #optional integrations with other crates
 tokio = ["std", "dep:tokio", "dep:tokio-rustls", "dep:webpki-roots"]
@@ -17,7 +19,7 @@ lettre = ["dep:lettre"]
 
 [dependencies]
 base64 = { version = "0.22.1", default-features = false }
-
+log = { version = "0.4.22", optional = true, default-features = false }
 
 # lettre message integration
 lettre = { version = "0.11.15", optional = true, default-features = false, features = [

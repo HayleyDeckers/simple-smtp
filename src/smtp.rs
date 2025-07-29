@@ -240,8 +240,8 @@ impl<'buffer, T: ReadWrite<Error = impl core::error::Error>> Smtp<'buffer, T> {
             is_last,
             message,
         };
-        #[cfg(feature = "std")]
-        println!("s>{reply}");
+        #[cfg(feature = "log-04")]
+        log::debug!("s>{reply}");
         Ok(reply)
     }
 
@@ -275,8 +275,8 @@ impl<'buffer, T: ReadWrite<Error = impl core::error::Error>> Smtp<'buffer, T> {
     }
 
     pub async fn send_data<'s>(&'s mut self, data: &[u8]) -> Result<Reply<'s>, Error<T::Error>> {
-        #[cfg(feature = "std")]
-        println!("c>[{} bytes of data]<CR><LF>.<CR><LF>", data.len());
+        #[cfg(feature = "log-04")]
+        log::debug!("c>[{} bytes of data]<CR><LF>.<CR><LF>", data.len());
         // send the data
         self.stream
             .write_multi(&[data, b"\r\n.\r\n"])
@@ -304,8 +304,8 @@ impl<'buffer, T: ReadWrite<Error = impl core::error::Error>> Smtp<'buffer, T> {
     }
 
     pub async fn ehlo(&mut self, domain: &str) -> Result<EhloResponse<'_>, Error<T::Error>> {
-        #[cfg(feature = "std")]
-        println!("c>EHLO {}", domain);
+        #[cfg(feature = "log-04")]
+        log::debug!("c>EHLO {}", domain);
         self.stream
             .write_multi(&[b"EHLO ", domain.as_bytes(), b"\r\n"])
             .await
@@ -322,8 +322,8 @@ impl<'buffer, T: ReadWrite<Error = impl core::error::Error>> Smtp<'buffer, T> {
     }
 
     pub async fn starttls(&mut self) -> Result<Reply, Error<T::Error>> {
-        #[cfg(feature = "std")]
-        println!("c>STARTTLS");
+        #[cfg(feature = "log-04")]
+        log::debug!("c>STARTTLS");
         self.stream
             .write_single(b"STARTTLS\r\n")
             .await
@@ -341,8 +341,8 @@ impl<'buffer, T: ReadWrite<Error = impl core::error::Error>> Smtp<'buffer, T> {
 
     pub async fn auth(&mut self, username: &str, password: &str) -> Result<Reply, Error<T::Error>> {
         use base64::prelude::*;
-        #[cfg(feature = "std")]
-        println!("c>AUTH PLAIN [censored]");
+        #[cfg(feature = "log-04")]
+        log::debug!("c>AUTH PLAIN [censored]");
 
         // since we have to base64 encode w/o allocating
         // we will use the read buffer to store the base64 encoded data.
@@ -391,8 +391,8 @@ impl<'buffer, T: ReadWrite<Error = impl core::error::Error>> Smtp<'buffer, T> {
     }
 
     pub async fn fast_quit(&mut self) -> Result<(), Error<T::Error>> {
-        #[cfg(feature = "std")]
-        println!("c>QUIT");
+        #[cfg(feature = "log-04")]
+        log::debug!("c>QUIT");
         self.stream
             .write_single(b"QUIT\r\n")
             .await
@@ -406,8 +406,8 @@ impl<'buffer, T: ReadWrite<Error = impl core::error::Error>> Smtp<'buffer, T> {
         to: impl Iterator<Item = impl AsRef<str>>,
         data: &[u8], //nice to have: streaming data for memory constrained devices
     ) -> Result<(), Error<T::Error>> {
-        #[cfg(feature = "std")]
-        println!("c>MAIL FROM: <{}>", from.as_ref());
+        #[cfg(feature = "log-04")]
+        log::debug!("c>MAIL FROM: <{}>", from.as_ref());
         self.stream
             .write_multi(&[b"MAIL FROM:<", from.as_ref().as_bytes(), b">\r\n"])
             .await
@@ -423,8 +423,8 @@ impl<'buffer, T: ReadWrite<Error = impl core::error::Error>> Smtp<'buffer, T> {
 
         // now we need to send the recipients
         for recipient in to {
-            #[cfg(feature = "std")]
-            println!("c>RCPT TO: <{}>", recipient.as_ref());
+            #[cfg(feature = "log-04")]
+            log::debug!("c>RCPT TO: <{}>", recipient.as_ref());
             self.stream
                 .write_multi(&[b"RCPT TO:<", recipient.as_ref().as_bytes(), b">\r\n"])
                 .await
@@ -439,8 +439,8 @@ impl<'buffer, T: ReadWrite<Error = impl core::error::Error>> Smtp<'buffer, T> {
                 }));
             }
         }
-        #[cfg(feature = "std")]
-        println!("c>DATA");
+        #[cfg(feature = "log-04")]
+        log::debug!("c>DATA");
         self.stream
             .write_single(b"DATA\r\n")
             .await

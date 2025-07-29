@@ -1371,6 +1371,7 @@ dependencies = [
  "base64",
  "embassy-net",
  "lettre",
+ "log",
  "rustls",
  "tokio",
  "tokio-rustls",
