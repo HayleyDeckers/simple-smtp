@@ -1,8 +1,10 @@
-use crate::{Buffer, ReadWrite};
-use core::ops::Range;
-use core::{fmt::Display, ops::Deref};
+use core::{
+    fmt::Display,
+    ops::{Deref, Range},
+};
 
 use super::{Error, MalformedError};
+use crate::{Buffer, ReadWrite};
 
 #[derive(Debug)]
 pub struct ReplyLine<'a> {

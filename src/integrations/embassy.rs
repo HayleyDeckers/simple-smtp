@@ -1,5 +1,6 @@
-use crate::ReadWrite;
 use embassy_net::tcp::TcpSocket;
+
+use crate::ReadWrite;
 
 impl ReadWrite for TcpSocket<'_> {
     type Error = EmbassyTcpError;

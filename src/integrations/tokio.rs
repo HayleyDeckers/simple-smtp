@@ -1,7 +1,9 @@
-use crate::ReadWrite;
 use core::ops::{Deref, DerefMut};
 use std::{array, io::IoSlice};
+
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+use crate::ReadWrite;
 
 pub struct TokioIo<T: AsyncRead + AsyncWrite + Unpin + Send>(pub T);
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Deref for TokioIo<T> {
@@ -78,11 +80,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> ReadWrite for TokioIo<T> {
 
 #[cfg(feature = "rustls")]
 mod rustls_support {
-    use super::TokioIo;
-    use crate::{Error, ReadWrite, Smtp};
     use std::sync::Arc;
+
     use tokio::io::{AsyncRead, AsyncWrite};
     use tokio_rustls::{TlsConnector, client::TlsStream};
+
+    use super::TokioIo;
+    use crate::{Error, ReadWrite, Smtp};
     impl<'buffer, T: AsyncRead + AsyncWrite + Unpin + Send> Smtp<'buffer, TokioIo<T>> {
         pub async fn upgrade_to_tls(
             self,
