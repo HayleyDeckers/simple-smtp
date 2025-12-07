@@ -5,7 +5,10 @@ impl<'buf, T: ReadWrite<Error = impl core::error::Error>> Smtp<'buf, T> {
         email: lettre::Message,
     ) -> Result<(), crate::Error<T::Error>> {
         let to = email.envelope().to();
-        let from = email.envelope().from().unwrap();
+        let from = email
+            .envelope()
+            .from()
+            .ok_or(crate::Error::ProtocolError(crate::ProtocolError::NoSender))?;
         let data = email.formatted();
         self.send_mail(from, to.iter(), &data).await
     }

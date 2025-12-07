@@ -18,7 +18,7 @@ impl Deref for Buffer<'_> {
         match self {
             #[cfg(feature = "alloc")]
             Buffer::Owned(v) => v.as_ref(),
-            Buffer::Borrowed(b) => *b,
+            Buffer::Borrowed(b) => b,
         }
     }
 }
@@ -28,7 +28,7 @@ impl DerefMut for Buffer<'_> {
         match self {
             #[cfg(feature = "alloc")]
             Buffer::Owned(v) => v.as_mut(),
-            Buffer::Borrowed(b) => *b,
+            Buffer::Borrowed(b) => b,
         }
     }
 }

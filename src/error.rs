@@ -37,7 +37,7 @@ impl core::fmt::Display for MalformedError {
             MalformedError::UnexpectedCode { expected, actual } => {
                 write!(
                     f,
-                    "Recieved unexpected code {}, expected one of {:?}",
+                    "Received unexpected code {}, expected one of {:?}",
                     actual, expected
                 )
             }

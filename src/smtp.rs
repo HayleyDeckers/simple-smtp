@@ -95,7 +95,7 @@ impl<'a> Reply<'a> {
         })
     }
 
-    fn from_buffer(buffer: &[u8]) -> Reply {
+    fn from_buffer(buffer: &[u8]) -> Reply<'_> {
         if buffer.len() < 4 {
             panic!("Buffer too small");
         }
@@ -321,7 +321,7 @@ impl<'buffer, T: ReadWrite<Error = impl core::error::Error>> Smtp<'buffer, T> {
         Ok(EhloResponse::new(reply))
     }
 
-    pub async fn starttls(&mut self) -> Result<Reply, Error<T::Error>> {
+    pub async fn starttls(&mut self) -> Result<Reply<'_>, Error<T::Error>> {
         #[cfg(feature = "log-04")]
         log::debug!("c>STARTTLS");
         self.stream
@@ -339,7 +339,11 @@ impl<'buffer, T: ReadWrite<Error = impl core::error::Error>> Smtp<'buffer, T> {
         Ok(reply)
     }
 
-    pub async fn auth(&mut self, username: &str, password: &str) -> Result<Reply, Error<T::Error>> {
+    pub async fn auth(
+        &mut self,
+        username: &str,
+        password: &str,
+    ) -> Result<Reply<'_>, Error<T::Error>> {
         use base64::prelude::*;
         #[cfg(feature = "log-04")]
         log::debug!("c>AUTH PLAIN [censored]");
@@ -377,7 +381,7 @@ impl<'buffer, T: ReadWrite<Error = impl core::error::Error>> Smtp<'buffer, T> {
         Ok(reply)
     }
 
-    pub async fn quit(&mut self) -> Result<Reply, Error<T::Error>> {
+    pub async fn quit(&mut self) -> Result<Reply<'_>, Error<T::Error>> {
         self.fast_quit().await?;
         let reply = self.read_multiline_reply().await?;
         // 221 or 554 are expected
@@ -520,17 +524,16 @@ impl Display for Extensions<'_> {
     }
 }
 impl Extensions<'_> {
-    pub fn from_str(s: &str) -> Extensions {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Extensions<'_> {
         if s.eq_ignore_ascii_case("STARTTLS") {
             Extensions::StartTls
         } else if s.eq_ignore_ascii_case("AUTH") {
             Extensions::Auth
+        } else if let Some((s, arg)) = s.split_once(' ') {
+            Extensions::Other(s, arg)
         } else {
-            if let Some((s, arg)) = s.split_once(' ') {
-                Extensions::Other(s, arg)
-            } else {
-                Extensions::Other(s, "")
-            }
+            Extensions::Other(s, "")
         }
     }
 }
