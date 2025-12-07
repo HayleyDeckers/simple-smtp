@@ -40,7 +40,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> ReadWrite for TokioIo<T> {
         } else {
             // should be enough for all cases but just to be sure
             const PER_LOOP: usize = 6;
-            let loops = (buf.len() + PER_LOOP - 1) / PER_LOOP;
+            let loops = buf.len().div_ceil(PER_LOOP);
             for l in 0..loops {
                 let mut slices: [IoSlice<'_>; PER_LOOP] = array::from_fn(|i| {
                     let idx = l * PER_LOOP + i;
@@ -64,10 +64,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> ReadWrite for TokioIo<T> {
                     &mut slices[..last_used_slice]
                 };
                 loop {
-                    let written = self.0.write_vectored(&slices).await?;
+                    let written = self.0.write_vectored(slices).await?;
                     std::io::IoSlice::advance_slices(&mut slices, written);
                     if slices.is_empty() {
-                        return Ok(());
+                        break;
                     }
                 }
             }
