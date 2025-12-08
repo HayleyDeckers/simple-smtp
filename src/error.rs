@@ -53,6 +53,7 @@ impl core::fmt::Display for MalformedError {
     }
 }
 
+/// Errors related to SMTP protocol issues.
 #[derive(Debug)]
 pub enum ProtocolError {
     AuthorizationError,
@@ -60,6 +61,8 @@ pub enum ProtocolError {
     #[cfg(feature = "lettre")]
     NoSender,
     UnsupportedExtension(Extensions<'static>),
+    /// Header value contains invalid characters (e.g., bare \r\n which could allow injection)
+    InvalidHeader(&'static str),
 }
 
 impl core::fmt::Display for ProtocolError {
@@ -71,6 +74,13 @@ impl core::fmt::Display for ProtocolError {
             ProtocolError::NoSender => write!(f, "Missing \"from\" address on lettre envelope"),
             ProtocolError::UnsupportedExtension(ext) => {
                 write!(f, "Extension {ext} not supported")
+            }
+            ProtocolError::InvalidHeader(name) => {
+                write!(
+                    f,
+                    "Header '{}' contains invalid characters (possible injection)",
+                    name
+                )
             }
         }
     }

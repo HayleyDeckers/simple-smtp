@@ -3,8 +3,8 @@ use core::{
     ops::{Deref, Range},
 };
 
-use super::{Error, MalformedError};
-use crate::{Buffer, ReadWrite};
+use super::{Error, MalformedError, ProtocolError};
+use crate::{Buffer, ReadWrite, message::Message};
 
 #[derive(Debug)]
 pub struct ReplyLine<'a> {
@@ -469,6 +469,273 @@ impl<'buffer, T: ReadWrite<Error = impl core::error::Error>> Smtp<'buffer, T> {
         }
         Ok(())
     }
+
+    /// Send a Message by streaming directly to the connection.
+    ///
+    /// The envelope addresses (from, to) are separate from the message headers.
+    /// This is how SMTP works - the envelope is for routing, headers are for display.
+    /// While they're usually the same, they don't have to be (e.g., mailing lists).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let msg = Message::new(
+    ///         MessageDate::now(),
+    ///         "Me <me@example.com>",
+    ///         "unique-id@example.com",
+    ///     )
+    ///     .with_to("you@example.com")
+    ///     .with_subject("Hello!")
+    ///     .with_body("Hi there!");
+    ///
+    /// smtp.send_message(
+    ///     &msg,
+    ///     "me@example.com",           // envelope from (bare address)
+    ///     ["you@example.com"].iter(), // envelope to
+    /// ).await?;
+    /// ```
+    pub async fn send_message(
+        &mut self,
+        message: &Message<'_>,
+        envelope_from: &str,
+        envelope_to: impl Iterator<Item = impl AsRef<str>>,
+    ) -> Result<(), Error<T::Error>> {
+        // Validate headers don't contain bare \r\n (injection prevention)
+        fn check_header(value: &str, name: &'static str) -> Result<(), ProtocolError> {
+            if value.contains("\r\n") {
+                return Err(ProtocolError::InvalidHeader(name));
+            }
+            Ok(())
+        }
+
+        check_header(message.from(), "From")?;
+        check_header(message.message_id(), "Message-ID")?;
+        if let Some(to) = message.to() {
+            check_header(to, "To")?;
+        }
+        if let Some(cc) = message.cc() {
+            check_header(cc, "Cc")?;
+        }
+        if let Some(bcc) = message.bcc() {
+            check_header(bcc, "Bcc")?;
+        }
+        if let Some(reply_to) = message.reply_to() {
+            check_header(reply_to, "Reply-To")?;
+        }
+        if let Some(subject) = message.subject() {
+            check_header(subject, "Subject")?;
+        }
+        if let Some(irt) = message.in_reply_to() {
+            check_header(irt, "In-Reply-To")?;
+        }
+        if let Some(refs) = message.references() {
+            check_header(refs, "References")?;
+        }
+
+        // Send envelope
+        #[cfg(feature = "log-04")]
+        log::debug!("c>MAIL FROM: <{}>", envelope_from);
+        self.stream
+            .write_multi(&[b"MAIL FROM:<", envelope_from.as_bytes(), b">\r\n"])
+            .await
+            .map_err(Error::IoError)?;
+        let reply = self.read_multiline_reply().await?;
+        if reply.code != 250 {
+            return Err(Error::MalformedError(MalformedError::UnexpectedCode {
+                expected: &[250],
+                actual: reply.code(),
+            }));
+        }
+
+        for recipient in envelope_to {
+            #[cfg(feature = "log-04")]
+            log::debug!("c>RCPT TO: <{}>", recipient.as_ref());
+            self.stream
+                .write_multi(&[b"RCPT TO:<", recipient.as_ref().as_bytes(), b">\r\n"])
+                .await
+                .map_err(Error::IoError)?;
+            let reply = self.read_multiline_reply().await?;
+            if reply.code != 250 {
+                return Err(Error::MalformedError(MalformedError::UnexpectedCode {
+                    expected: &[250],
+                    actual: reply.code(),
+                }));
+            }
+        }
+
+        #[cfg(feature = "log-04")]
+        log::debug!("c>DATA");
+        self.stream
+            .write_single(b"DATA\r\n")
+            .await
+            .map_err(Error::IoError)?;
+        let reply = self.read_multiline_reply().await?;
+        if reply.code != 354 {
+            return Err(Error::MalformedError(MalformedError::UnexpectedCode {
+                expected: &[354],
+                actual: reply.code(),
+            }));
+        }
+
+        // Stream message headers directly - no buffer needed except for date
+        // RFC 2822 dates are max ~31 bytes, e.g. "Wed, 01 Jan 2025 12:00:00 +0000"
+        let mut date_buf = [0u8; 40];
+        let date_len = {
+            use core::fmt::Write;
+            // Tiny inline writer - just tracks position while writing to a slice
+            struct SliceWriter<'a>(&'a mut [u8], usize);
+            impl core::fmt::Write for SliceWriter<'_> {
+                fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                    let b = s.as_bytes();
+                    let end = self.1 + b.len();
+                    if end > self.0.len() {
+                        return Err(core::fmt::Error);
+                    }
+                    self.0[self.1..end].copy_from_slice(b);
+                    self.1 = end;
+                    Ok(())
+                }
+            }
+            let mut w = SliceWriter(&mut date_buf, 0);
+            let _ = write!(w, "{}", message.date());
+            w.1
+        };
+        self.stream
+            .write_multi(&[b"Date: ", &date_buf[..date_len], b"\r\n"])
+            .await
+            .map_err(Error::IoError)?;
+
+        self.stream
+            .write_multi(&[b"From: ", message.from().as_bytes(), b"\r\n"])
+            .await
+            .map_err(Error::IoError)?;
+
+        self.stream
+            .write_multi(&[b"Message-ID: <", message.message_id().as_bytes(), b">\r\n"])
+            .await
+            .map_err(Error::IoError)?;
+
+        if let Some(to) = message.to() {
+            self.stream
+                .write_multi(&[b"To: ", to.as_bytes(), b"\r\n"])
+                .await
+                .map_err(Error::IoError)?;
+        }
+
+        if let Some(cc) = message.cc() {
+            self.stream
+                .write_multi(&[b"Cc: ", cc.as_bytes(), b"\r\n"])
+                .await
+                .map_err(Error::IoError)?;
+        }
+
+        if let Some(bcc) = message.bcc() {
+            self.stream
+                .write_multi(&[b"Bcc: ", bcc.as_bytes(), b"\r\n"])
+                .await
+                .map_err(Error::IoError)?;
+        }
+
+        if let Some(reply_to) = message.reply_to() {
+            self.stream
+                .write_multi(&[b"Reply-To: ", reply_to.as_bytes(), b"\r\n"])
+                .await
+                .map_err(Error::IoError)?;
+        }
+
+        if let Some(subject) = message.subject() {
+            self.stream
+                .write_multi(&[b"Subject: ", subject.as_bytes(), b"\r\n"])
+                .await
+                .map_err(Error::IoError)?;
+        }
+
+        if let Some(irt) = message.in_reply_to() {
+            self.stream
+                .write_multi(&[b"In-Reply-To: ", irt.as_bytes(), b"\r\n"])
+                .await
+                .map_err(Error::IoError)?;
+        }
+
+        if let Some(refs) = message.references() {
+            self.stream
+                .write_multi(&[b"References: ", refs.as_bytes(), b"\r\n"])
+                .await
+                .map_err(Error::IoError)?;
+        }
+
+        // Blank line before body
+        self.stream
+            .write_single(b"\r\n")
+            .await
+            .map_err(Error::IoError)?;
+
+        // Write body with dot-stuffing (RFC 5321 §4.5.2)
+        // Any line starting with '.' gets an extra '.' prepended
+        // We do this without allocation by writing chunks
+        if let Some(body) = message.body() {
+            let body = body.as_bytes();
+
+            // Handle body starting with a dot
+            if body.starts_with(b".") {
+                self.stream
+                    .write_single(b".")
+                    .await
+                    .map_err(Error::IoError)?;
+            }
+
+            let mut pos = 0;
+            while pos < body.len() {
+                // Find next \r\n. sequence (line starting with dot)
+                if let Some(rel_idx) = find_crlf_dot(&body[pos..]) {
+                    // Write up to and including the \r\n
+                    let crlf_end = pos + rel_idx + 2;
+                    self.stream
+                        .write_single(&body[pos..crlf_end])
+                        .await
+                        .map_err(Error::IoError)?;
+                    // Write extra dot (the stuffing)
+                    self.stream
+                        .write_single(b".")
+                        .await
+                        .map_err(Error::IoError)?;
+                    // Continue from the original dot
+                    pos = crlf_end;
+                } else {
+                    // No more \r\n. sequences, write the rest
+                    self.stream
+                        .write_single(&body[pos..])
+                        .await
+                        .map_err(Error::IoError)?;
+                    break;
+                }
+            }
+        }
+
+        // End with \r\n.\r\n
+        self.stream
+            .write_single(b"\r\n.\r\n")
+            .await
+            .map_err(Error::IoError)?;
+
+        let reply = self.read_multiline_reply().await?;
+        if reply.code != 250 {
+            return Err(Error::MalformedError(MalformedError::UnexpectedCode {
+                expected: &[250],
+                actual: reply.code(),
+            }));
+        }
+        Ok(())
+    }
+}
+
+/// Find the position of \r\n. in a byte slice (returns position of \r)
+fn find_crlf_dot(data: &[u8]) -> Option<usize> {
+    // We need at least 3 bytes for \r\n.
+    if data.len() < 3 {
+        return None;
+    }
+    data.windows(3).position(|w| w == b"\r\n.")
 }
 
 pub struct Ready<'a> {

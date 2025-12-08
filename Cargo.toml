@@ -6,7 +6,7 @@ edition = "2024"
 [features]
 default = ["embassy", "lettre", "log-04", "rustls", "tokio"]
 # for no_std environments
-std = ["alloc", "embassy-net?/std"]
+std = ["alloc", "chrono/clock", "embassy-net?/std"]
 alloc = ["embassy-net?/alloc"]
 
 log-04 = ["dep:log"]
@@ -19,6 +19,7 @@ lettre = ["dep:lettre"]
 
 [dependencies]
 base64 = { version = "0.22.1", default-features = false }
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 log = { version = "0.4.22", optional = true, default-features = false }
 
 # lettre message integration
