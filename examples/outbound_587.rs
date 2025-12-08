@@ -1,5 +1,5 @@
 use anyhow::Result;
-use simple_smtp::{Smtp, integrations::tokio::TokioIo};
+use simple_smtp::{Smtp, integrations::tokio::TokioIo, smtp::Extensions};
 use tokio::net::TcpStream;
 
 #[tokio::main]
@@ -24,6 +24,20 @@ async fn main() -> Result<()> {
     for line in ehlo_response.lines() {
         println!("{line}");
     }
+
+    if ehlo_response.supports(Extensions::StartTls) {
+        let reply = smtp.starttls().await?;
+        for line in reply.lines() {
+            println!("{line}");
+        }
+    }
+
+    let mut smtp = smtp.upgrade_to_tls("codingcat.nl").await?;
+    let ehlo_response = smtp.ehlo("codingcat.nl").await?;
+    for line in ehlo_response.lines() {
+        println!("{line}");
+    }
+
     // Disconnect
     smtp.quit().await?;
     println!("Disconnected from server.");
