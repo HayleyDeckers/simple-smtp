@@ -9,6 +9,64 @@ use core::fmt;
 use chrono::{DateTime, FixedOffset, TimeZone};
 
 // ═══════════════════════════════════════════════════════════════════════════
+// TimeOffset - timezone offset representation
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A timezone offset from UTC.
+///
+/// Hours and minutes are always positive; the variant determines the direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeOffset {
+    /// Positive offset (east of UTC), e.g., UTC+5:30
+    Positive { hours: u32, minutes: u32 },
+    /// Negative offset (west of UTC), e.g., UTC-1:30
+    Negative { hours: u32, minutes: u32 },
+}
+
+impl TimeOffset {
+    /// Create a positive offset (east of UTC).
+    ///
+    /// Both `hours` and `minutes` must be positive.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use simple_smtp::message::TimeOffset;
+    ///
+    /// let ist = TimeOffset::positive(5, 30); // UTC+5:30 (India)
+    /// ```
+    #[must_use]
+    pub const fn positive(hours: u32, minutes: u32) -> Self {
+        Self::Positive { hours, minutes }
+    }
+
+    /// Create a negative offset (west of UTC).
+    ///
+    /// Both `hours` and `minutes` must be positive.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use simple_smtp::message::TimeOffset;
+    ///
+    /// let offset = TimeOffset::negative(1, 30); // UTC-1:30
+    /// ```
+    #[must_use]
+    pub const fn negative(hours: u32, minutes: u32) -> Self {
+        Self::Negative { hours, minutes }
+    }
+
+    /// Convert to offset seconds (positive for east, negative for west).
+    fn to_seconds(self) -> i32 {
+        let total_minutes = match self {
+            Self::Positive { hours, minutes } => (hours * 60 + minutes) as i32,
+            Self::Negative { hours, minutes } => -((hours * 60 + minutes) as i32),
+        };
+        total_minutes * 60
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // MessageDate - wrapper around chrono's DateTime
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -72,19 +130,19 @@ impl MessageDate {
     /// # Example
     ///
     /// ```
-    /// use simple_smtp::message::MessageDate;
+    /// use simple_smtp::message::{MessageDate, TimeOffset};
     ///
     /// // You have 14:30 from an RTC, and you know you're in UTC+1
     /// let date = MessageDate::utc(2025, 12, 7, 14, 30, 0)
     ///     .unwrap()
-    ///     .at_offset(1, 0)
+    ///     .at_offset(TimeOffset::positive(1, 0))
     ///     .unwrap();
     ///
     /// assert!(date.to_string().contains("14:30:00 +0100"));
     /// ```
     #[must_use]
-    pub fn at_offset(self, tz_hour: i32, tz_minute: i32) -> Option<Self> {
-        let offset_seconds = tz_hour * 3600 + tz_minute.signum() * tz_minute.abs() * 60;
+    pub fn at_offset(self, offset: TimeOffset) -> Option<Self> {
+        let offset_seconds = offset.to_seconds();
         let offset = FixedOffset::east_opt(offset_seconds)?;
         let naive = self.0.naive_local();
         offset.from_local_datetime(&naive).single().map(MessageDate)
@@ -367,7 +425,7 @@ mod tests {
     fn date_format_rfc2822() {
         let d = MessageDate::utc(2025, 12, 7, 12, 30, 0)
             .unwrap()
-            .at_offset(1, 0)
+            .at_offset(TimeOffset::positive(1, 0))
             .unwrap();
         assert!(d.to_string().contains("Dec 2025"));
         assert!(d.to_string().contains("12:30:00"));
@@ -383,11 +441,50 @@ mod tests {
     #[test]
     fn date_at_offset_changes_label_not_time() {
         let utc = MessageDate::utc(2025, 12, 7, 12, 0, 0).unwrap();
-        let offset = utc.at_offset(5, 0).unwrap();
+        let offset = utc.at_offset(TimeOffset::positive(5, 0)).unwrap();
         assert!(offset.to_string().contains("12:00:00 +0500"));
     }
 
     #[test]
+<<<<<<< HEAD
+=======
+    fn date_at_offset_negative_hour_with_minutes() {
+        // UTC-1:30 should be -0130
+        let utc = MessageDate::utc(2025, 12, 7, 12, 0, 0).unwrap();
+        let offset = utc.at_offset(TimeOffset::negative(1, 30)).unwrap();
+        assert!(
+            offset.to_string().contains("-0130"),
+            "Expected -0130 but got: {}",
+            offset
+        );
+    }
+
+    #[test]
+    fn date_at_offset_positive_hour_with_minutes() {
+        // UTC+5:30 (like India) should be +0530
+        let utc = MessageDate::utc(2025, 12, 7, 12, 0, 0).unwrap();
+        let offset = utc.at_offset(TimeOffset::positive(5, 30)).unwrap();
+        assert!(
+            offset.to_string().contains("+0530"),
+            "Expected +0530 but got: {}",
+            offset
+        );
+    }
+
+    #[test]
+    fn date_at_offset_zero_hour_negative_minutes() {
+        // Edge case: UTC-0:30 (rare but valid)
+        let utc = MessageDate::utc(2025, 12, 7, 12, 0, 0).unwrap();
+        let offset = utc.at_offset(TimeOffset::negative(0, 30)).unwrap();
+        assert!(
+            offset.to_string().contains("-0030"),
+            "Expected -0030 but got: {}",
+            offset
+        );
+    }
+
+    #[test]
+>>>>>>> ab1f08d (⭐ message: redesign at_offset API with TimeOffset enum)
     fn date_utc_convenience() {
         let d = MessageDate::utc(2025, 12, 7, 12, 0, 0).unwrap();
         assert!(d.to_string().contains("+0000"));
@@ -428,7 +525,7 @@ mod tests {
     fn message_to_string() {
         let d = MessageDate::utc(2025, 12, 7, 14, 30, 0)
             .unwrap()
-            .at_offset(-5, 0)
+            .at_offset(TimeOffset::negative(5, 0))
             .unwrap();
         let msg = Message::new(d, "Sender <sender@example.com>", "abc123@example.com")
             .with_to("recipient@example.com")
