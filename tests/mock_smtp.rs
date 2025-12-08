@@ -5,7 +5,7 @@
 
 use std::{collections::VecDeque, fmt};
 
-use simple_smtp::{ReadWrite, Smtp};
+use simple_smtp::{Error, Message, MessageDate, ProtocolError, ReadWrite, Smtp};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Mock Error Type
@@ -446,4 +446,167 @@ async fn test_wrong_greeting_code() {
     let result = smtp.ready().await;
 
     assert!(result.is_err(), "ready() should fail on non-220 code");
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Tests: RFC 5322 Message + Dot-Stuffing
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Helper to create a mock set up for a full send_message flow.
+fn mock_for_send_message() -> MockStream {
+    let mut mock = mock_with_ehlo();
+    mock.queue_line("250 OK"); // MAIL FROM
+    mock.queue_line("250 OK"); // RCPT TO
+    mock.queue_line("354 Go ahead"); // DATA
+    mock.queue_line("250 Queued"); // End of data
+    mock
+}
+
+#[tokio::test]
+async fn test_send_message_dot_stuffs_body_starting_with_dot() {
+    let date = MessageDate::utc(2025, 1, 1, 12, 0, 0).unwrap();
+    let msg = Message::new(date, "from@test.com", "id@test.com")
+        .with_body(".This line starts with a dot");
+
+    let mock = mock_for_send_message();
+    let mut smtp = Smtp::new(mock);
+    let _ = smtp.ready().await.unwrap();
+    let _ = smtp.ehlo("client").await.unwrap();
+
+    smtp.send_message(&msg, "from@test.com", ["to@test.com"].iter())
+        .await
+        .expect("send_message should succeed");
+
+    let (stream, _) = smtp.into_inner();
+    let written = stream.written_str();
+    // Body should have extra dot: "..This line starts with a dot"
+    assert!(
+        written.contains("..This line starts with a dot"),
+        "Body not properly dot-stuffed. Written:\n{}",
+        written
+    );
+}
+
+#[tokio::test]
+async fn test_send_message_dot_stuffs_line_starting_with_dot() {
+    let date = MessageDate::utc(2025, 1, 1, 12, 0, 0).unwrap();
+    let msg =
+        Message::new(date, "from@test.com", "id@test.com").with_body("Hello\r\n.Hidden\r\nWorld");
+
+    let mock = mock_for_send_message();
+    let mut smtp = Smtp::new(mock);
+    let _ = smtp.ready().await.unwrap();
+    let _ = smtp.ehlo("client").await.unwrap();
+
+    smtp.send_message(&msg, "from@test.com", ["to@test.com"].iter())
+        .await
+        .expect("send_message should succeed");
+
+    let (stream, _) = smtp.into_inner();
+    let written = stream.written_str();
+    // The line ".Hidden" should become "..Hidden"
+    assert!(
+        written.contains("\r\n..Hidden\r\n"),
+        "Line not properly dot-stuffed. Written:\n{}",
+        written
+    );
+}
+
+#[tokio::test]
+async fn test_send_message_dot_stuffs_lone_dot_line() {
+    // This is the critical case - a line with just "." would end the message early 💀
+    let date = MessageDate::utc(2025, 1, 1, 12, 0, 0).unwrap();
+    let msg = Message::new(date, "from@test.com", "id@test.com").with_body("Before\r\n.\r\nAfter");
+
+    let mock = mock_for_send_message();
+    let mut smtp = Smtp::new(mock);
+    let _ = smtp.ready().await.unwrap();
+    let _ = smtp.ehlo("client").await.unwrap();
+
+    smtp.send_message(&msg, "from@test.com", ["to@test.com"].iter())
+        .await
+        .expect("send_message should succeed");
+
+    let (stream, _) = smtp.into_inner();
+    let written = stream.written_str();
+    // The lone "." line should become ".."
+    assert!(
+        written.contains("\r\n..\r\n"),
+        "Lone dot not properly stuffed. Written:\n{}",
+        written
+    );
+    // And "After" should still be in the message
+    assert!(
+        written.contains("After"),
+        "Text after dot was lost. Written:\n{}",
+        written
+    );
+}
+
+#[tokio::test]
+async fn test_send_message_no_stuffing_needed() {
+    let date = MessageDate::utc(2025, 1, 1, 12, 0, 0).unwrap();
+    let msg = Message::new(date, "from@test.com", "id@test.com")
+        .with_body("Just a normal message.\r\nNo dots at line starts.");
+
+    let mock = mock_for_send_message();
+    let mut smtp = Smtp::new(mock);
+    let _ = smtp.ready().await.unwrap();
+    let _ = smtp.ehlo("client").await.unwrap();
+
+    smtp.send_message(&msg, "from@test.com", ["to@test.com"].iter())
+        .await
+        .expect("send_message should succeed");
+
+    let (stream, _) = smtp.into_inner();
+    let written = stream.written_str();
+    // Body should be unchanged
+    assert!(written.contains("Just a normal message.\r\nNo dots at line starts."));
+    // No double dots should appear
+    assert!(!written.contains(".."));
+}
+
+#[tokio::test]
+async fn test_send_message_rejects_header_with_crlf() {
+    // Subject contains \r\n which could allow header injection 🦹
+    let date = MessageDate::utc(2025, 1, 1, 12, 0, 0).unwrap();
+    let msg = Message::new(date, "from@test.com", "id@test.com")
+        .with_subject("Hello\r\nX-Injected: evil");
+
+    let mock = mock_for_send_message();
+    let mut smtp = Smtp::new(mock);
+    let _ = smtp.ready().await.unwrap();
+    let _ = smtp.ehlo("client").await.unwrap();
+
+    let result = smtp
+        .send_message(&msg, "from@test.com", ["to@test.com"].iter())
+        .await;
+
+    // Should fail with InvalidHeader error
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    match err {
+        Error::ProtocolError(ProtocolError::InvalidHeader(name)) => {
+            assert_eq!(name, "Subject");
+        }
+        _ => panic!("Expected InvalidHeader error, got {:?}", err),
+    }
+}
+
+#[tokio::test]
+async fn test_send_message_rejects_from_with_crlf() {
+    let date = MessageDate::utc(2025, 1, 1, 12, 0, 0).unwrap();
+    let msg = Message::new(date, "from@test.com\r\nX-Bad: header", "id@test.com");
+
+    let mock = MockStream::new(); // No responses needed, we fail before sending
+    let mut smtp = Smtp::new(mock);
+
+    let result = smtp
+        .send_message(&msg, "from@test.com", ["to@test.com"].iter())
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(Error::ProtocolError(ProtocolError::InvalidHeader("From")))
+    ));
 }

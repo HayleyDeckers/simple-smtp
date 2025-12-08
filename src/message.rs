@@ -84,7 +84,14 @@ impl MessageDate {
     /// ```
     #[must_use]
     pub fn at_offset(self, tz_hour: i32, tz_minute: i32) -> Option<Self> {
-        let offset_seconds = tz_hour * 3600 + tz_minute.signum() * tz_minute.abs() * 60;
+        // Minutes inherit the hour's sign (if hour is non-zero), otherwise use minute's own sign
+        // This way .at_offset(-1, 30) gives UTC-1:30, not UTC-0:30
+        let sign = if tz_hour != 0 {
+            tz_hour.signum()
+        } else {
+            tz_minute.signum()
+        };
+        let offset_seconds = sign * (tz_hour.abs() * 3600 + tz_minute.abs() * 60);
         let offset = FixedOffset::east_opt(offset_seconds)?;
         let naive = self.0.naive_local();
         offset.from_local_datetime(&naive).single().map(MessageDate)
@@ -385,6 +392,43 @@ mod tests {
         let utc = MessageDate::utc(2025, 12, 7, 12, 0, 0).unwrap();
         let offset = utc.at_offset(5, 0).unwrap();
         assert!(offset.to_string().contains("12:00:00 +0500"));
+    }
+
+    #[test]
+    fn date_at_offset_negative_hour_with_minutes() {
+        // UTC-1:30 should be -0130, not -0030
+        // This tests that minutes inherit the hour's sign
+        let utc = MessageDate::utc(2025, 12, 7, 12, 0, 0).unwrap();
+        let offset = utc.at_offset(-1, 30).unwrap();
+        assert!(
+            offset.to_string().contains("-0130"),
+            "Expected -0130 but got: {}",
+            offset
+        );
+    }
+
+    #[test]
+    fn date_at_offset_positive_hour_with_minutes() {
+        // UTC+5:30 (like India) should be +0530
+        let utc = MessageDate::utc(2025, 12, 7, 12, 0, 0).unwrap();
+        let offset = utc.at_offset(5, 30).unwrap();
+        assert!(
+            offset.to_string().contains("+0530"),
+            "Expected +0530 but got: {}",
+            offset
+        );
+    }
+
+    #[test]
+    fn date_at_offset_zero_hour_negative_minutes() {
+        // Edge case: UTC-0:30 (rare but valid)
+        let utc = MessageDate::utc(2025, 12, 7, 12, 0, 0).unwrap();
+        let offset = utc.at_offset(0, -30).unwrap();
+        assert!(
+            offset.to_string().contains("-0030"),
+            "Expected -0030 but got: {}",
+            offset
+        );
     }
 
     #[test]

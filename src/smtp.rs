@@ -1295,4 +1295,66 @@ mod tests {
         assert!(ehlo.supports(Extensions::Auth("LOGIN")));
         assert!(!ehlo.supports(Extensions::Auth("CRAM-MD5")));
     }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // Dot-stuffing helper tests (find_crlf_dot)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn find_crlf_dot_empty() {
+        assert_eq!(find_crlf_dot(b""), None);
+    }
+
+    #[test]
+    fn find_crlf_dot_too_short() {
+        assert_eq!(find_crlf_dot(b"ab"), None);
+        assert_eq!(find_crlf_dot(b"\r\n"), None);
+    }
+
+    #[test]
+    fn find_crlf_dot_at_start() {
+        // \r\n. at position 0
+        assert_eq!(find_crlf_dot(b"\r\n.hello"), Some(0));
+    }
+
+    #[test]
+    fn find_crlf_dot_in_middle() {
+        assert_eq!(find_crlf_dot(b"hello\r\n.world"), Some(5));
+    }
+
+    #[test]
+    fn find_crlf_dot_multiple_finds_first() {
+        // Should find the first occurrence
+        assert_eq!(find_crlf_dot(b"a\r\n.b\r\n.c"), Some(1));
+    }
+
+    #[test]
+    fn find_crlf_dot_no_dot() {
+        assert_eq!(find_crlf_dot(b"hello\r\nworld"), None);
+    }
+
+    #[test]
+    fn find_crlf_dot_partial_crlf() {
+        // Just \r without \n
+        assert_eq!(find_crlf_dot(b"hello\r.world"), None);
+        // Just \n without \r
+        assert_eq!(find_crlf_dot(b"hello\n.world"), None);
+    }
+
+    #[test]
+    fn find_crlf_dot_at_end() {
+        assert_eq!(find_crlf_dot(b"hello\r\n."), Some(5));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // Header validation error display tests
+    // ══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn protocol_error_invalid_header_display() {
+        let err = ProtocolError::InvalidHeader("Subject");
+        let msg = format!("{}", err);
+        assert!(msg.contains("Subject"));
+        assert!(msg.contains("invalid"));
+    }
 }
