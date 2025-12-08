@@ -506,7 +506,8 @@ impl<'a> Deref for Ready<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Extensions<'a> {
     StartTls,
-    Auth,
+    /// AUTH extension with supported mechanisms (e.g., "PLAIN LOGIN")
+    Auth(&'a str),
     Other(&'a str, &'a str),
 }
 
@@ -514,7 +515,13 @@ impl Display for Extensions<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Extensions::StartTls => write!(f, "STARTTLS"),
-            Extensions::Auth => write!(f, "AUTH"),
+            Extensions::Auth(mechanisms) => {
+                if mechanisms.is_empty() {
+                    write!(f, "AUTH")
+                } else {
+                    write!(f, "AUTH {mechanisms}")
+                }
+            }
             Extensions::Other(s, arg) => {
                 if arg.is_empty() {
                     write!(f, "{s}")
@@ -528,14 +535,29 @@ impl Display for Extensions<'_> {
 impl Extensions<'_> {
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Extensions<'_> {
-        if s.eq_ignore_ascii_case("STARTTLS") {
+        // Split to get keyword and args separately
+        let (keyword, args) = s.split_once(' ').unwrap_or((s, ""));
+
+        if keyword.eq_ignore_ascii_case("STARTTLS") {
+            // RFC 3207 defines STARTTLS with no parameters.
+            // We accept args gracefully (Postel's law) but warn about it.
+            // <https://datatracker.ietf.org/doc/html/rfc3207#section-4>
+            #[cfg(feature = "log-04")]
+            if !args.is_empty() {
+                log::warn!("STARTTLS with unexpected arguments: {args:?}");
+            }
             Extensions::StartTls
-        } else if s.eq_ignore_ascii_case("AUTH") {
-            Extensions::Auth
-        } else if let Some((s, arg)) = s.split_once(' ') {
-            Extensions::Other(s, arg)
+        } else if keyword.eq_ignore_ascii_case("AUTH") {
+            // RFC 4954 Section 3: AUTH should have a space-separated list of
+            // supported SASL mechanisms. Empty mechanisms is technically weird.
+            // <https://datatracker.ietf.org/doc/html/rfc4954#section-3>
+            #[cfg(feature = "log-04")]
+            if args.is_empty() {
+                log::warn!("AUTH extension with no mechanisms advertised");
+            }
+            Extensions::Auth(args)
         } else {
-            Extensions::Other(s, "")
+            Extensions::Other(keyword, args)
         }
     }
 }
@@ -556,18 +578,33 @@ impl<'a> EhloResponse<'a> {
         EhloResponse { reply }
     }
 
+    /// Check if the server supports an extension.
+    ///
+    /// For `Auth`, you can pass:
+    /// - `Auth("")` to check if AUTH is supported at all
+    /// - `Auth("PLAIN")` to check if a specific mechanism is supported
     pub fn supports(&self, ext: Extensions) -> bool {
-        self.extensions().any(|e| e == ext)
+        self.extensions().any(|e| match (&e, &ext) {
+            // For AUTH, special handling: check if the requested mechanism
+            // is in the server's list (or if we're just checking for any AUTH)
+            (Extensions::Auth(server_mechs), Extensions::Auth(wanted)) => {
+                if wanted.is_empty() {
+                    // Auth("") means "does the server support AUTH at all?"
+                    true
+                } else {
+                    // Check if the wanted mechanism is in the server's list
+                    server_mechs
+                        .split_whitespace()
+                        .any(|m| m.eq_ignore_ascii_case(wanted))
+                }
+            }
+            // Everything else uses structural equality
+            _ => e == ext,
+        })
     }
 
     pub fn extensions<'b: 'a>(&'b self) -> impl Iterator<Item = Extensions<'a>> {
-        self.reply.lines().skip(1).map(|line| {
-            let line = if let Some((line, _)) = line.split_once(' ') {
-                line
-            } else {
-                line
-            };
-            Extensions::from_str(line)
-        })
+        // Pass the full line to from_str - it handles keyword/args splitting
+        self.reply.lines().skip(1).map(Extensions::from_str)
     }
 }
