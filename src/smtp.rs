@@ -608,3 +608,424 @@ impl<'a> EhloResponse<'a> {
         self.reply.lines().skip(1).map(Extensions::from_str)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Helper to build a buffer in the format Reply::from_buffer expects.
+    // Format: [code: u16][msg_len: u16][message bytes...]
+    fn build_single_line_buffer(code: u16, message: &str) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&code.to_ne_bytes());
+        buf.extend_from_slice(&(message.len() as u16).to_ne_bytes());
+        buf.extend_from_slice(message.as_bytes());
+        buf
+    }
+
+    // Helper to build a multi-line reply buffer.
+    // Each line after the first is prefixed with \r\n + 4 bytes (code+marker),
+    // but bytes 4-5 of that prefix store the next message length.
+    fn build_multiline_buffer(code: u16, messages: &[&str]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        // First line header
+        buf.extend_from_slice(&code.to_ne_bytes());
+        buf.extend_from_slice(&(messages[0].len() as u16).to_ne_bytes());
+        buf.extend_from_slice(messages[0].as_bytes());
+
+        for msg in &messages[1..] {
+            // \r\n terminator for previous line
+            buf.extend_from_slice(b"\r\n");
+            // 4 bytes: first 2 are code (we don't care in from_buffer),
+            // next 2 are the length of *this* message
+            buf.extend_from_slice(&code.to_ne_bytes()); // placeholder for code bytes
+            buf.extend_from_slice(&(msg.len() as u16).to_ne_bytes());
+            buf.extend_from_slice(msg.as_bytes());
+        }
+        buf
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // Reply::from_buffer tests
+    // ══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn reply_from_buffer_single_line() {
+        let buf = build_single_line_buffer(250, "OK");
+        let reply = Reply::from_buffer(&buf);
+
+        assert_eq!(reply.code(), 250);
+        assert_eq!(reply.current_line(), "OK");
+    }
+
+    #[test]
+    fn reply_from_buffer_empty_message() {
+        let buf = build_single_line_buffer(220, "");
+        let reply = Reply::from_buffer(&buf);
+
+        assert_eq!(reply.code(), 220);
+        assert_eq!(reply.current_line(), "");
+    }
+
+    #[test]
+    fn reply_from_buffer_long_message() {
+        let long_msg = "a".repeat(200);
+        let buf = build_single_line_buffer(354, &long_msg);
+        let reply = Reply::from_buffer(&buf);
+
+        assert_eq!(reply.code(), 354);
+        assert_eq!(reply.current_line(), long_msg);
+    }
+
+    #[test]
+    #[should_panic(expected = "Buffer too small")]
+    fn reply_from_buffer_too_small_header() {
+        let buf = vec![0, 0, 0];
+        let _ = Reply::from_buffer(&buf);
+    }
+
+    #[test]
+    #[should_panic(expected = "Buffer too small")]
+    fn reply_from_buffer_message_len_exceeds_buffer() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&250u16.to_ne_bytes());
+        buf.extend_from_slice(&10u16.to_ne_bytes()); // claims 10 bytes
+        buf.extend_from_slice(b"hi"); // only 2 bytes
+        let _ = Reply::from_buffer(&buf);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // Reply iterator tests
+    // ══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn reply_iterator_single_line() {
+        let buf = build_single_line_buffer(250, "mail.example.com");
+        let reply = Reply::from_buffer(&buf);
+
+        let lines: Vec<_> = reply.lines().collect();
+        assert_eq!(lines, vec!["mail.example.com"]);
+    }
+
+    #[test]
+    fn reply_iterator_multiline() {
+        let buf =
+            build_multiline_buffer(250, &["mail.example.com", "STARTTLS", "AUTH PLAIN LOGIN"]);
+        let reply = Reply::from_buffer(&buf);
+
+        let lines: Vec<_> = reply.lines().collect();
+        assert_eq!(
+            lines,
+            vec!["mail.example.com", "STARTTLS", "AUTH PLAIN LOGIN"]
+        );
+    }
+
+    /// RFC 5321 Section 4.2 doesn't mandate non-empty text after the code,
+    /// so some servers send empty extension lines. We handle this gracefully.
+    /// <https://datatracker.ietf.org/doc/html/rfc5321#section-4.2>
+    #[test]
+    fn reply_iterator_empty_lines() {
+        let buf = build_multiline_buffer(250, &["host", "", "SIZE 1000"]);
+        let reply = Reply::from_buffer(&buf);
+
+        let lines: Vec<_> = reply.lines().collect();
+        assert_eq!(lines, vec!["host", "", "SIZE 1000"]);
+    }
+
+    #[test]
+    fn reply_code_accessor() {
+        let buf = build_single_line_buffer(421, "Service not available");
+        let reply = Reply::from_buffer(&buf);
+        assert_eq!(reply.code(), 421);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // Extensions::from_str tests
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /// RFC 5321 Section 2.4: "Verbs and argument values (e.g., 'TO:' or 'to:'
+    /// in the RCPT command and extension name keywords) are not case sensitive"
+    /// <https://datatracker.ietf.org/doc/html/rfc5321#section-2.4>
+    #[test]
+    fn extensions_case_insensitive() {
+        // STARTTLS in various cases
+        assert_eq!(Extensions::from_str("STARTTLS"), Extensions::StartTls);
+        assert_eq!(Extensions::from_str("starttls"), Extensions::StartTls);
+        assert_eq!(Extensions::from_str("StartTls"), Extensions::StartTls);
+
+        // AUTH in various cases (with empty mechanisms)
+        assert_eq!(Extensions::from_str("AUTH"), Extensions::Auth(""));
+        assert_eq!(Extensions::from_str("auth"), Extensions::Auth(""));
+        assert_eq!(Extensions::from_str("AuTh"), Extensions::Auth(""));
+    }
+
+    #[test]
+    fn extensions_auth_with_mechanisms() {
+        // Server advertises AUTH with PLAIN and LOGIN mechanisms
+        assert_eq!(
+            Extensions::from_str("AUTH PLAIN LOGIN"),
+            Extensions::Auth("PLAIN LOGIN")
+        );
+
+        // Case insensitive keyword, mechanisms preserved as-is
+        assert_eq!(
+            Extensions::from_str("auth PLAIN CRAM-MD5"),
+            Extensions::Auth("PLAIN CRAM-MD5")
+        );
+    }
+
+    #[test]
+    fn extensions_other_no_args() {
+        assert_eq!(
+            Extensions::from_str("PIPELINING"),
+            Extensions::Other("PIPELINING", "")
+        );
+    }
+
+    #[test]
+    fn extensions_other_with_args() {
+        assert_eq!(
+            Extensions::from_str("SIZE 10485760"),
+            Extensions::Other("SIZE", "10485760")
+        );
+    }
+
+    #[test]
+    fn extensions_8bitmime() {
+        assert_eq!(
+            Extensions::from_str("8BITMIME"),
+            Extensions::Other("8BITMIME", "")
+        );
+    }
+
+    #[test]
+    fn extensions_empty_string() {
+        assert_eq!(Extensions::from_str(""), Extensions::Other("", ""));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // ReplyLine tests
+    // ══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn replyline_accessors() {
+        let line = ReplyLine {
+            code: 250,
+            is_last: false,
+            message: "STARTTLS",
+        };
+
+        assert_eq!(line.code(), 250);
+        assert!(!line.is_last());
+        assert_eq!(line.message(), "STARTTLS");
+    }
+
+    #[test]
+    fn replyline_display_continuation() {
+        let line = ReplyLine {
+            code: 250,
+            is_last: false,
+            message: "mail.example.com",
+        };
+        assert_eq!(format!("{}", line), "250-mail.example.com");
+    }
+
+    #[test]
+    fn replyline_display_final() {
+        let line = ReplyLine {
+            code: 250,
+            is_last: true,
+            message: "OK",
+        };
+        assert_eq!(format!("{}", line), "250 OK");
+    }
+
+    #[test]
+    fn replyline_display_empty_message() {
+        let line = ReplyLine {
+            code: 220,
+            is_last: true,
+            message: "",
+        };
+        assert_eq!(format!("{}", line), "220 ");
+    }
+
+    #[test]
+    fn replyline_display_various_codes() {
+        let cases = [
+            (220, "Service ready"),
+            (250, "OK"),
+            (354, "Start mail input"),
+            (421, "Service not available"),
+            (550, "Mailbox unavailable"),
+        ];
+
+        for (code, msg) in cases {
+            let line = ReplyLine {
+                code,
+                is_last: true,
+                message: msg,
+            };
+            assert_eq!(format!("{}", line), format!("{} {}", code, msg));
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // Extensions Display tests
+    // ══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn extensions_display_starttls() {
+        assert_eq!(format!("{}", Extensions::StartTls), "STARTTLS");
+    }
+
+    #[test]
+    fn extensions_display_auth_no_mechanisms() {
+        assert_eq!(format!("{}", Extensions::Auth("")), "AUTH");
+    }
+
+    #[test]
+    fn extensions_display_auth_with_mechanisms() {
+        assert_eq!(
+            format!("{}", Extensions::Auth("PLAIN LOGIN")),
+            "AUTH PLAIN LOGIN"
+        );
+    }
+
+    #[test]
+    fn extensions_display_other_no_arg() {
+        let ext = Extensions::Other("PIPELINING", "");
+        assert_eq!(format!("{}", ext), "PIPELINING");
+    }
+
+    #[test]
+    fn extensions_display_other_with_arg() {
+        let ext = Extensions::Other("SIZE", "10485760");
+        assert_eq!(format!("{}", ext), "SIZE 10485760");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // MalformedError Display tests
+    // ══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn malformed_error_display_invalid_line_termination() {
+        let err = MalformedError::InvalidLineTermination;
+        assert_eq!(format!("{}", err), "Invalid line termination");
+    }
+
+    #[test]
+    fn malformed_error_display_invalid_encoding() {
+        let err = MalformedError::InvalidEncoding;
+        assert_eq!(format!("{}", err), "Invalid encoding");
+    }
+
+    #[test]
+    fn malformed_error_display_no_code() {
+        let err = MalformedError::NoCode;
+        assert_eq!(format!("{}", err), "No code");
+    }
+
+    #[test]
+    fn malformed_error_display_unexpected_code() {
+        let err = MalformedError::UnexpectedCode {
+            expected: &[250, 251],
+            actual: 550,
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("550"));
+        assert!(msg.contains("250"));
+        assert!(msg.contains("251"));
+    }
+
+    #[test]
+    fn malformed_error_display_code_changed() {
+        let err = MalformedError::CodeChanged {
+            old_code: 250,
+            new_code: 354,
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("250"));
+        assert!(msg.contains("354"));
+    }
+
+    #[test]
+    fn malformed_error_display_unexpected_eof() {
+        let err = MalformedError::UnexpectedEof;
+        assert_eq!(format!("{}", err), "Unexpected EOF reached");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // Reply::replies() tests (ReplyLine iterator)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn reply_replies_single_line() {
+        let buf = build_single_line_buffer(250, "OK");
+        let reply = Reply::from_buffer(&buf);
+
+        let lines: Vec<_> = reply.replies().collect();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].code(), 250);
+        assert_eq!(lines[0].message(), "OK");
+        assert!(lines[0].is_last());
+    }
+
+    #[test]
+    fn reply_replies_multiline_is_last_flags() {
+        let buf = build_multiline_buffer(250, &["host.example.com", "STARTTLS", "SIZE 1000"]);
+        let reply = Reply::from_buffer(&buf);
+
+        let lines: Vec<_> = reply.replies().collect();
+        assert_eq!(lines.len(), 3);
+
+        // First two should NOT be last
+        assert!(!lines[0].is_last());
+        assert!(!lines[1].is_last());
+        // Last one should be last
+        assert!(lines[2].is_last());
+
+        // All should have same code
+        for line in &lines {
+            assert_eq!(line.code(), 250);
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // EhloResponse::supports() tests
+    // ══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn ehlo_supports_starttls() {
+        let buf = build_multiline_buffer(250, &["mail.example.com", "STARTTLS", "SIZE 1000"]);
+        let reply = Reply::from_buffer(&buf);
+        let ehlo = EhloResponse::new(reply);
+
+        assert!(ehlo.supports(Extensions::StartTls));
+        assert!(!ehlo.supports(Extensions::Auth("")));
+    }
+
+    #[test]
+    fn ehlo_supports_auth_any() {
+        // When checking Auth(""), we're asking "does the server support AUTH at all?"
+        let buf = build_multiline_buffer(250, &["mail.example.com", "AUTH PLAIN LOGIN"]);
+        let reply = Reply::from_buffer(&buf);
+        let ehlo = EhloResponse::new(reply);
+
+        // Should return true for Auth("") meaning "any AUTH"
+        assert!(ehlo.supports(Extensions::Auth("")));
+    }
+
+    #[test]
+    fn ehlo_supports_auth_specific_mechanism() {
+        // Server advertises AUTH PLAIN LOGIN
+        let buf = build_multiline_buffer(250, &["mail.example.com", "AUTH PLAIN LOGIN"]);
+        let reply = Reply::from_buffer(&buf);
+        let ehlo = EhloResponse::new(reply);
+
+        // Should be able to check for specific mechanisms
+        assert!(ehlo.supports(Extensions::Auth("PLAIN")));
+        assert!(ehlo.supports(Extensions::Auth("LOGIN")));
+        assert!(!ehlo.supports(Extensions::Auth("CRAM-MD5")));
+    }
+}
