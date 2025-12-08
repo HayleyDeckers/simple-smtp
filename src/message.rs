@@ -483,6 +483,165 @@ mod tests {
         );
     }
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // Invalid offset tests
+    // ══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn date_at_offset_rejects_hours_over_24() {
+        // FixedOffset::east_opt() accepts -86400 to +86400 seconds (±24 hours)
+        // So hours > 24 should fail
+        let utc = MessageDate::utc(2025, 12, 7, 12, 0, 0).unwrap();
+        assert!(
+            utc.at_offset(TimeOffset::positive(25, 0)).is_none(),
+            "Hours > 24 should be rejected"
+        );
+        assert!(
+            utc.at_offset(TimeOffset::negative(25, 0)).is_none(),
+            "Hours > 24 should be rejected (negative)"
+        );
+    }
+
+    #[test]
+    fn date_at_offset_minutes_over_60_behavior() {
+        // Minutes > 60 are semantically invalid (should be 0-59)
+        // But chrono's FixedOffset just treats it as total seconds
+        // So (0, 61) = 61 minutes = 3660 seconds = +01:01:00
+        let utc = MessageDate::utc(2025, 12, 7, 12, 0, 0).unwrap();
+        let result = utc.at_offset(TimeOffset::positive(0, 61));
+        // This actually succeeds because 61 minutes = 3660 seconds is valid
+        // The offset will be formatted as +0101 (1 hour 1 minute)
+        assert!(
+            result.is_some(),
+            "Minutes > 60 are accepted by chrono (treated as total seconds)"
+        );
+        let offset = result.unwrap();
+        let s = offset.to_string();
+        // Should show +0101 (1 hour 1 minute)
+        assert!(
+            s.contains("+0101"),
+            "61 minutes should format as +0101, got: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn date_at_offset_rejects_very_large_offsets() {
+        // FixedOffset::east_opt() accepts -86399 to +86399 seconds
+        // That's UTC-23:59:59 to UTC+23:59:59 (not exactly ±24:00:00)
+        let utc = MessageDate::utc(2025, 12, 7, 12, 0, 0).unwrap();
+
+        // +23:59 should work (within limit)
+        assert!(
+            utc.at_offset(TimeOffset::positive(23, 59)).is_some(),
+            "+23:59 should be valid (at the limit)"
+        );
+        // -23:59 should work
+        assert!(
+            utc.at_offset(TimeOffset::negative(23, 59)).is_some(),
+            "-23:59 should be valid (at the limit)"
+        );
+        // But +24:00 should fail (exceeds limit of 86399 seconds)
+        assert!(
+            utc.at_offset(TimeOffset::positive(24, 0)).is_none(),
+            "+24:00 should be rejected (exceeds 86399s limit)"
+        );
+        // -24:00 should also fail
+        assert!(
+            utc.at_offset(TimeOffset::negative(24, 0)).is_none(),
+            "-24:00 should be rejected (exceeds 86399s limit)"
+        );
+        // +23:61 should fail (23*60 + 61 = 1441 minutes = 86460 seconds > 86399)
+        assert!(
+            utc.at_offset(TimeOffset::positive(23, 61)).is_none(),
+            "+23:61 should be rejected (86460s exceeds 86399s limit)"
+        );
+        // -23:61 should also fail
+        assert!(
+            utc.at_offset(TimeOffset::negative(23, 61)).is_none(),
+            "-23:61 should be rejected (86460s exceeds 86399s limit)"
+        );
+    }
+
+    #[test]
+    fn date_at_offset_minutes_wrap_behavior() {
+        // Test what happens when minutes >= 60
+        // Chrono treats it as total minutes, so (0, 90) = 90 minutes = 1h 30min
+        let utc = MessageDate::utc(2025, 12, 7, 12, 0, 0).unwrap();
+
+        // 90 minutes = 5400 seconds = +01:30:00
+        let result = utc.at_offset(TimeOffset::positive(0, 90));
+        assert!(
+            result.is_some(),
+            "90 minutes should be accepted (treated as total seconds)"
+        );
+        let offset = result.unwrap();
+        let s = offset.to_string();
+        // Should show +0130 (1 hour 30 minutes)
+        assert!(
+            s.contains("+0130"),
+            "90 minutes should format as +0130, got: {}",
+            s
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // single() error case tests (from_local_datetime ambiguity)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn date_at_offset_single_always_works_for_fixed_offset() {
+        // FixedOffset has no DST, so single() should always return Some
+        // for valid datetimes. Let's test various edge cases.
+        let utc = MessageDate::utc(2025, 12, 7, 12, 0, 0).unwrap();
+
+        // Normal case
+        assert!(
+            utc.at_offset(TimeOffset::positive(5, 0)).is_some(),
+            "Normal offset should work"
+        );
+
+        // Edge of day (23:59:59)
+        let late = MessageDate::utc(2025, 12, 7, 23, 59, 59).unwrap();
+        assert!(
+            late.at_offset(TimeOffset::positive(1, 0)).is_some(),
+            "Late in day should work"
+        );
+
+        // Start of day (00:00:00)
+        let early = MessageDate::utc(2025, 12, 7, 0, 0, 0).unwrap();
+        assert!(
+            early.at_offset(TimeOffset::negative(12, 0)).is_some(),
+            "Early in day with negative offset should work"
+        );
+    }
+
+    #[test]
+    fn date_at_offset_edge_case_year_boundaries() {
+        // Test at year boundaries where timezone math might be tricky
+        let new_year = MessageDate::utc(2025, 12, 31, 23, 59, 59).unwrap();
+        assert!(
+            new_year.at_offset(TimeOffset::positive(1, 0)).is_some(),
+            "New year boundary should work"
+        );
+
+        let year_start = MessageDate::utc(2026, 1, 1, 0, 0, 0).unwrap();
+        assert!(
+            year_start.at_offset(TimeOffset::negative(1, 0)).is_some(),
+            "Year start with negative offset should work"
+        );
+    }
+
+    #[test]
+    fn date_at_offset_leap_day() {
+        // Test leap day (Feb 29)
+        let leap_day = MessageDate::utc(2024, 2, 29, 12, 0, 0).unwrap();
+        assert!(
+            leap_day.at_offset(TimeOffset::positive(5, 30)).is_some(),
+            "Leap day should work"
+        );
+    }
+
     #[test]
 >>>>>>> ab1f08d (⭐ message: redesign at_offset API with TimeOffset enum)
     fn date_utc_convenience() {
