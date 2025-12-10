@@ -13,6 +13,11 @@ pub use buffer::Buffer;
 pub mod smtp;
 pub use smtp::Smtp;
 
+#[cfg(feature = "alloc")]
+pub mod address;
+#[cfg(feature = "alloc")]
+pub use address::EmailAddress;
+
 pub mod integrations {
     #[cfg(feature = "embassy")]
     mod embassy;
