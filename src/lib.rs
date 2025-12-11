@@ -13,6 +13,8 @@ pub use buffer::Buffer;
 pub mod smtp;
 pub use smtp::Smtp;
 
+pub mod message;
+
 pub mod integrations {
     #[cfg(feature = "embassy")]
     mod embassy;
