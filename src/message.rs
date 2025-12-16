@@ -4,3 +4,6 @@
 
 pub mod datetime;
 pub use datetime::{DateTime, TimeZone};
+
+pub mod address;
+pub use address::EmailAddress;
